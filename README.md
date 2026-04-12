@@ -52,57 +52,76 @@ When `w` and `h` are omitted, the raw image is returned with no processing.
 
 ```bash
 # Raw image (no processing)
-curl -o photo.jpg http://192.168.22.102:8099/random
+curl -o photo.jpg http://localhost:8099/random
 
 # Smart crop to 1600x1200 (no palette)
-curl -o photo.png "http://192.168.22.102:8099/random?w=1600&h=1200"
+curl -o photo.png "http://localhost:8099/random?w=1600&h=1200"
 
 # Smart crop + Spectra 6 palette for Inky Impression 13.3"
-curl -o photo.png "http://192.168.22.102:8099/random?w=1600&h=1200&palette=spectra6"
+curl -o photo.png "http://localhost:8099/random?w=1600&h=1200&palette=spectra6"
 
 # Smart crop + Spectra 6 palette for Waveshare 7.3"
-curl -o photo.png "http://192.168.22.102:8099/random?w=800&h=480&palette=spectra6"
+curl -o photo.png "http://localhost:8099/random?w=800&h=480&palette=spectra6"
 
 # Smart crop + 4-level grayscale
-curl -o photo.png "http://192.168.22.102:8099/random?w=800&h=480&palette=bw4"
+curl -o photo.png "http://localhost:8099/random?w=800&h=480&palette=bw4"
 
 # Check which photo was served
-curl -s -D- http://192.168.22.102:8099/random -o /dev/null | grep X-Photo-Name
+curl -s -D- http://localhost:8099/random -o /dev/null | grep X-Photo-Name
 ```
 
 ## Setup
 
-### 1. Build and start the service
+### Docker Compose (standalone)
+
+Create a `docker-compose.yml`:
+
+```yaml
+services:
+  trmnl-photos:
+    build: https://github.com/runty/trmnl-photos.git
+    container_name: trmnl-photos
+    ports:
+      - "8099:8099"
+    volumes:
+      - /path/to/your/photos:/photos:ro
+    deploy:
+      resources:
+        limits:
+          cpus: "2"
+          memory: 2G
+    restart: unless-stopped
+```
+
+Then:
 
 ```bash
-docker compose -f docker-trmnlphotos.yml build
-docker compose -f docker-trmnlphotos.yml up -d
+docker compose build
+docker compose up -d
 ```
 
 First startup takes a moment as the U2-Net model is loaded into memory.
 
-### 2. Add photos
+### Docker Build (from source)
 
-Drop image files into the mounted directory. By default this is `/mnt/cloud/GDrive/trmnlphotos/` on the host. Photos are available immediately.
-
-### 3. Change the photo directory
-
-Edit `docker-trmnlphotos.yml` and update the host path in the volume mount:
-
-```yaml
-volumes:
-  - /your/photo/directory:/photos:ro
+```bash
+git clone https://github.com/runty/trmnl-photos.git
+cd trmnl-photos
+docker build -t trmnl-photos .
+docker run -d -p 8099:8099 -v /path/to/your/photos:/photos:ro trmnl-photos
 ```
 
-Then restart: `docker compose -f docker-trmnlphotos.yml up -d`
+### Add Photos
+
+Drop image files into the mounted directory. Photos are available immediately — no restart needed.
 
 ## Configuration
 
-| Setting         | Default                            | How to change                     |
-|-----------------|------------------------------------|-----------------------------------|
-| Port            | 8099                               | Edit `ports` in compose file      |
-| Photo directory | `/mnt/cloud/GDrive/trmnlphotos/`  | Edit volume mount in compose file |
-| CPU / Memory    | 2 CPUs / 2GB                       | Edit `deploy.resources` in compose file |
+| Setting         | Default | How to change                     |
+|-----------------|---------|-----------------------------------|
+| Port            | 8099    | Edit `ports` in compose file or `-p` flag |
+| Photo directory | n/a     | Set via volume mount              |
+| CPU / Memory    | 2 / 2GB | Edit `deploy.resources` in compose file |
 
 ## Performance
 
@@ -114,7 +133,3 @@ Processing takes ~2-3 seconds per image on an x86_64 host (U2-Net saliency detec
 - **Smart crop**: finds the salient region's bounding box, expands to target aspect ratio, clamps to image bounds
 - **Enhancement**: contrast, color saturation, and sharpness boost tuned for e-ink
 - **Palette dithering**: Floyd-Steinberg dithering to the target display's exact color space
-
-## Current Usage
-
-- **inky13** (Pi Zero 2 W + Inky Impression 13.3" Spectra 6): fetches `?w=1600&h=1200&palette=spectra6` every hour via `~/trmnl-scripts/update_photos.py`
