@@ -1,7 +1,8 @@
 import os
 import random
 import mimetypes
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import logging
+from http.server import HTTPServer, ThreadingHTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 from io import BytesIO
 
@@ -9,7 +10,12 @@ import numpy as np
 from PIL import Image, ImageEnhance
 from rembg import new_session, remove
 
-PHOTOS_DIR = "/photos"
+PHOTOS_DIR = os.getenv("PHOTOS_DIR", "/photos")
+PORT = int(os.getenv("PORT", "8099"))
+MAX_DIMENSION = 4096
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+log = logging.getLogger("trmnl-photos")
 
 session = new_session("u2netp")
 
@@ -87,7 +93,7 @@ def apply_palette(img, palette_name):
     palette_data = []
     for r, g, b in colors:
         palette_data.extend([r, g, b])
-    palette_data.extend(palette_data[:3] * (256 - len(colors)))
+    palette_data.extend([0] * (768 - len(palette_data)))
 
     palette_img = Image.new("P", (1, 1))
     palette_img.putpalette(palette_data)
@@ -126,28 +132,51 @@ class RandomPhotoHandler(BaseHTTPRequestHandler):
         filepath = os.path.join(PHOTOS_DIR, chosen)
         params = parse_qs(parsed.query)
 
-        w = params.get("w", [None])[0]
-        h = params.get("h", [None])[0]
+        w_str = params.get("w", [None])[0]
+        h_str = params.get("h", [None])[0]
         palette = params.get("palette", [None])[0]
 
-        if w and h:
-            img = Image.open(filepath).convert("RGB")
-            print(f"Smart cropping {chosen} to {w}x{h}...")
-            img = smart_crop(img, int(w), int(h))
+        if w_str and h_str:
+            try:
+                w = int(w_str)
+                h = int(h_str)
+            except ValueError:
+                self.send_error(400, "w and h must be integers")
+                return
+            if w < 1 or h < 1 or w > MAX_DIMENSION or h > MAX_DIMENSION:
+                self.send_error(400, f"w and h must be between 1 and {MAX_DIMENSION}")
+                return
+            if palette and palette not in PALETTES:
+                self.send_error(400, f"Unknown palette: {palette}. Options: {', '.join(PALETTES)}")
+                return
+
+            try:
+                img = Image.open(filepath).convert("RGB")
+            except Exception:
+                log.warning(f"Failed to open {chosen}, skipping")
+                self.send_error(500, "Failed to process image")
+                return
+
+            log.info(f"Smart cropping {chosen} to {w}x{h}")
+            img = smart_crop(img, w, h)
             img = enhance_for_eink(img)
 
             if palette:
-                print(f"Applying {palette} palette...")
+                log.info(f"Applying {palette} palette")
                 img = apply_palette(img, palette)
 
             buf = BytesIO()
             img.save(buf, format="PNG")
             data = buf.getvalue()
             mime = "image/png"
-            print(f"Done: {chosen} ({len(data)} bytes)")
+            log.info(f"Done: {chosen} ({len(data)} bytes)")
         else:
-            with open(filepath, "rb") as f:
-                data = f.read()
+            try:
+                with open(filepath, "rb") as f:
+                    data = f.read()
+            except Exception:
+                self.send_error(500, "Failed to read image")
+                return
             mime = mimetypes.guess_type(chosen)[0] or "application/octet-stream"
 
         self.send_response(200)
@@ -162,7 +191,8 @@ class RandomPhotoHandler(BaseHTTPRequestHandler):
         pass
 
 
-print("Loading U2-Net model...")
+# Warm up the model so the first real request isn't slow
+log.info("Loading U2-Net model...")
 get_saliency_center(Image.new("RGB", (64, 64), (128, 128, 128)))
-print("Model loaded. Starting server on :8099")
-HTTPServer(("0.0.0.0", 8099), RandomPhotoHandler).serve_forever()
+log.info(f"Model loaded. Starting server on :{PORT}")
+ThreadingHTTPServer(("0.0.0.0", PORT), RandomPhotoHandler).serve_forever()
